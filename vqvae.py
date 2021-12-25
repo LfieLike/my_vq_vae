@@ -37,7 +37,8 @@ class Quantize(nn.Module):
         self.register_buffer("embed", embed)
         self.register_buffer("cluster_size", torch.zeros(n_embed))
         self.register_buffer("embed_avg", embed.clone())
-
+        # print("shape:")
+        # print(embed.shape)
     def forward(self, input):
         flatten = input.reshape(-1, self.dim)
         dist = (
@@ -46,11 +47,14 @@ class Quantize(nn.Module):
             + self.embed.pow(2).sum(0, keepdim=True)
         )
         _, embed_ind = (-dist).max(1)
+        # print(embed_ind.shape)
         embed_onehot = F.one_hot(embed_ind, self.n_embed).type(flatten.dtype)
         embed_ind = embed_ind.view(*input.shape[:-1])
         quantize = self.embed_code(embed_ind)
-
+        # print(embed_ind.shape)
+        # print("-----")
         if self.training:
+            # print("!!!!!!")
             embed_onehot_sum = embed_onehot.sum(0)
             embed_sum = flatten.transpose(0, 1) @ embed_onehot
 
@@ -178,6 +182,7 @@ class VQVAE(nn.Module):
         self.enc_t = Encoder(channel, channel, n_res_block, n_res_channel, stride=2)
         self.quantize_conv_t = nn.Conv2d(channel, embed_dim, 1)
         self.quantize_t = Quantize(embed_dim, n_embed)
+        self.n_embed = n_embed
         self.dec_t = Decoder(
             embed_dim, embed_dim, channel, n_res_block, n_res_channel, stride=2
         )
@@ -196,15 +201,15 @@ class VQVAE(nn.Module):
         )
 
     def forward(self, input):
-        quant_t, quant_b, diff, _, _ = self.encode(input)
+        quant_t, quant_b, diff, _, _,sim = self.encode(input)
         dec = self.decode(quant_t, quant_b)
 
-        return dec, diff
+        return dec, diff,sim
 
     def encode(self, input):
         enc_b = self.enc_b(input)
         enc_t = self.enc_t(enc_b)
-
+        # print(enc_t.shape)
         quant_t = self.quantize_conv_t(enc_t).permute(0, 2, 3, 1)
         quant_t, diff_t, id_t = self.quantize_t(quant_t)
         quant_t = quant_t.permute(0, 3, 1, 2)
@@ -215,10 +220,21 @@ class VQVAE(nn.Module):
 
         quant_b = self.quantize_conv_b(enc_b).permute(0, 2, 3, 1)
         quant_b, diff_b, id_b = self.quantize_b(quant_b)
+        # print(id_b.dtype)
+        id_b = id_b.view(id_b.shape[0],-1)
+        E = torch.eye(self.n_embed)
+        one_hot = E[id_b]
+        one_hot = one_hot.view(one_hot.shape[0],-1)
+        # F.cosine_similarity(XaZb.unsqueeze(1), XaZb.unsqueeze(0), dim=-1)
+        sim = torch.mm(one_hot,one_hot.T)
+        diag_E = torch.eye(sim.shape[0],dtype=bool)
+        # sim[diag_E]=0
+        # sim = (sim.sum())/(sim.shape[0]*sim.shape[0])
+        # print(sim.shape)
         quant_b = quant_b.permute(0, 3, 1, 2)
         diff_b = diff_b.unsqueeze(0)
 
-        return quant_t, quant_b, diff_t + diff_b, id_t, id_b
+        return quant_t, quant_b, diff_t + diff_b, id_t, id_b,sim
 
     def decode(self, quant_t, quant_b):
         upsample_t = self.upsample_t(quant_t)
